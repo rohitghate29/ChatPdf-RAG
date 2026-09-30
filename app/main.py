@@ -1,9 +1,11 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from pathlib import Path
 import uuid
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-from app.database import engine
+from app.database import engine, get_db
+from app.models import Document
 
 app = FastAPI(title="ChatPDF API")
 
@@ -50,9 +52,55 @@ async def upload_document(file: UploadFile = File(...)):
   }
 
 @app.get("/health/db")
-def database_health():
-  with engine.connect() as connection:
-    result = connection.execute(text("SELECT 1"))
-    return {
+def database_health(db: Session = Depends(get_db)):
+  result = db.execute(text("SELECT 1"))
+
+  return {
       "database": result.scalar()
+  }
+
+
+@app.post("/documents/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+):
+
+    # 1. Validate file type
+    if file.content_type != "application/pdf":
+      raise HTTPException(
+          status_code=400,
+          detail="Only PDF files are allowed"
+      )
+
+    # 2. Generate document ID
+    document_id = uuid.uuid4()
+
+    # 3. Create file path
+    file_path = UPLOAD_DIR / f"{document_id}.pdf"
+
+    # 4. Read and save PDF
+    contents = await file.read()
+    file_path.write_bytes(contents)
+
+    # 5. Create database record
+    document = Document(
+      id=document_id,
+      filename=file.filename,
+      file_path=str(file_path),
+      file_size=len(contents),
+      status="uploaded"
+    )
+
+    # 6. Save record to database
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+
+    return {
+      "document_id": str(document.id),
+      "filename": document.filename,
+      "file_size": document.file_size,
+      "status": document.status,
+      "message": "PDF uploaded successfully"
     }
