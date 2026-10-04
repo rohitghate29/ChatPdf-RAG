@@ -5,7 +5,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.database import engine, get_db
-from app.models import Document
+from app.models import Document, DocumentChunk
+from app.services.pdf_service import extract_pages
+from app.services.chunk_sevice import chunk_pages
+from app.services.embedding_service import generate_embeddings
 
 app = FastAPI(title="ChatPDF API")
 
@@ -89,18 +92,45 @@ async def upload_document(
       filename=file.filename,
       file_path=str(file_path),
       file_size=len(contents),
-      status="uploaded"
+      status="processing"
     )
 
     # 6. Save record to database
     db.add(document)
     db.commit()
-    db.refresh(document)
+    # db.refresh(document)
+
+    # Extract pages
+    pages = extract_pages(str(file_path))
+
+    # create chunks
+    chunks = chunk_pages(pages)
+
+    texts = [chunk["content"] for chunk in chunks]
+
+    embeddings = generate_embeddings(texts)
+
+    # save chunks + embeddings
+    for chunk, embedding in zip(chunks, embeddings):
+      document_chunk = DocumentChunk(
+        document_id=document_id,
+        chunk_index=chunk["chunk_index"],
+        content=chunk["content"],
+        page_number=chunk["page_number"],
+        embedding=embedding
+      )
+
+      db.add(document_chunk)
+
+    # Mark doc as completed
+    document.status = "completed"
+
+    db.commit()
 
     return {
-      "document_id": str(document.id),
-      "filename": document.filename,
-      "file_size": document.file_size,
+      "document_id": str(document_id),
+      "filename": file.filename,
+      "chunks_created": len(chunks),
       "status": document.status,
-      "message": "PDF uploaded successfully"
+      "message": "PDF processed successfully"
     }
